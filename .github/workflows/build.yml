@@ -83,7 +83,7 @@ jobs:
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
               android:accessibilityEventTypes="typeWindowStateChanged"
               android:accessibilityFeedbackType="feedbackGeneric"
-              android:accessibilityFlags="flagDefault"
+              android:accessibilityFlags="flagIncludeNotImportantViews"
               android:canPerformGestures="true"
               android:canTakeScreenshot="true"
               android:canRetrieveWindowContent="true"
@@ -155,8 +155,10 @@ jobs:
 
           private const val SYS = """Sos un agente que maneja un celular Android mirando capturas de pantalla. Respondé SOLO un JSON con UNA acción por vez.
           Coordenadas normalizadas de 0 a 1000 (x horizontal, y vertical, origen arriba a la izquierda).
-          Acciones: {"accion":"tocar","x":0,"y":0} | {"accion":"deslizar","x":0,"y":0,"x2":0,"y2":0} (para scroll) | {"accion":"escribir","texto":"...","enter":false} (antes tocá el campo) | {"accion":"abrir_app","app":"nombre"} | {"accion":"atras"} | {"accion":"inicio"} | {"accion":"recientes"} | {"accion":"esperar"} | {"accion":"terminar","mensaje":"resumen"}.
-          Para abrir una app usá SIEMPRE abrir_app con el nombre que ves; nunca toques su ícono. Al tocar, apuntá al centro del elemento. Agregá siempre "razon" con una frase corta. Si la tarea ya está cumplida, usá terminar. Si algo falla varias veces, probá otro camino. Nunca compres, pagues, envíes mensajes ni borres datos salvo que la tarea lo pida explícitamente."""
+          Acciones: {"accion":"tocar","x":0,"y":0} | {"accion":"doble_toque","x":0,"y":0} (sirve para dar me gusta tocando dos veces la foto) | {"accion":"tocar_texto","texto":"Me gusta"} (toca el botón de la lista cuyo nombre contenga ese texto; es lo MÁS confiable, usalo siempre que el botón esté en la lista) | {"accion":"deslizar","x":0,"y":0,"x2":0,"y2":0} (para scroll: para ver más contenido hacia abajo deslizá de un y alto a un y bajo, o sea de abajo hacia arriba) | {"accion":"escribir","texto":"...","enter":false} (antes tocá el campo) | {"accion":"abrir_app","app":"nombre"} | {"accion":"atras"} | {"accion":"inicio"} | {"accion":"recientes"} | {"accion":"esperar"} | {"accion":"terminar","mensaje":"resumen"}.
+          Para abrir una app usá SIEMPRE abrir_app con el nombre que ves; nunca toques su ícono. Al tocar, apuntá al centro del elemento. Agregá siempre "razon" con una frase corta. Usá terminar solo cuando veas en la captura una prueba clara de que la tarea se cumplió (por ejemplo un corazón rojo); si no estás seguro, verificá o reintentá. Un corazón rojo ya tiene me gusta: no lo toques de nuevo. Te paso la lista de elementos de la pantalla con su posición exacta (x,y): preferí esas coordenadas. Si algo falla varias veces, probá otro camino. Nunca compres, pagues, envíes mensajes ni borres datos salvo que la tarea lo pida explícitamente."""
+
+          private val BLOQUEADAS = listOf("bank", "banco", "mercadopago", "wallet", "paypal", "binance", "bybit", "okx", "coinbase", "brubank", "uala", "naranjax", "lemon", "revolut", "payoneer", "poker", "casino", "bet365", "betsson")
 
           class AgentService : AccessibilityService() {
               companion object {
@@ -186,12 +188,17 @@ jobs:
 
               private fun loop(task: String, key: String, model: String) {
                   val history = ArrayList<String>()
+                  var last = ""
                   performGlobalAction(GLOBAL_ACTION_HOME)
                   Thread.sleep(1500)
                   for (step in 1..40) {
                       if (!running) { log("Detenido."); return }
+                      val pkg = rootInActiveWindow?.packageName?.toString() ?: ""
+                      if (BLOQUEADAS.any { pkg.contains(it, true) }) { log("App sensible ($pkg): me detengo por seguridad."); return }
                       val shot = screenshot()
                       if (shot == null) { log("No pude sacar la captura"); return }
+                      if (shot == last && history.isNotEmpty()) history.add("AVISO: la pantalla NO cambió tras tu última acción; probá otra cosa")
+                      last = shot
                       val act = askGemini(task, history, shot, key, model)
                       if (act == null) return
                       val a = act.optString("accion")
@@ -214,11 +221,11 @@ jobs:
                               val hw = Bitmap.wrapHardwareBuffer(r.hardwareBuffer, r.colorSpace)
                               if (hw != null) {
                                   val soft = hw.copy(Bitmap.Config.ARGB_8888, false)
-                                  val w = 540
+                                  val w = 720
                                   val h = soft.height * w / soft.width
                                   val small = Bitmap.createScaledBitmap(soft, w, h, true)
                                   val out = ByteArrayOutputStream()
-                                  small.compress(Bitmap.CompressFormat.JPEG, 70, out)
+                                  small.compress(Bitmap.CompressFormat.JPEG, 80, out)
                                   result = Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
                               }
                               r.hardwareBuffer.close()
@@ -232,7 +239,7 @@ jobs:
               }
 
               private fun askGemini(task: String, hist: List<String>, img: String, key: String, model: String): JSONObject? {
-                  val prompt = "Tarea del usuario: $task\nAcciones ya hechas: ${hist.joinToString(" | ")}\nMirá la captura actual y devolvé la próxima acción."
+                  val prompt = "Tarea del usuario: $task\nAcciones ya hechas: ${hist.joinToString(" | ")}\nElementos en pantalla (nombre @ x,y):\n${uiDump()}\nMirá la captura actual y devolvé la próxima acción."
                   val parts = JSONArray()
                       .put(JSONObject().put("text", prompt))
                       .put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", img)))
@@ -272,6 +279,13 @@ jobs:
                   fun px(v: Double, max: Int) = (v / 1000.0 * max).toFloat()
                   when (a.optString("accion")) {
                       "tocar" -> gesture(px(a.optDouble("x"), w), px(a.optDouble("y"), h), null, null, 60)
+                      "doble_toque" -> {
+                          val xx = px(a.optDouble("x"), w)
+                          val yy = px(a.optDouble("y"), h)
+                          gesture(xx, yy, null, null, 50)
+                          Thread.sleep(80)
+                          gesture(xx, yy, null, null, 50)
+                      }
                       "deslizar" -> gesture(px(a.optDouble("x"), w), px(a.optDouble("y"), h), px(a.optDouble("x2"), w), px(a.optDouble("y2"), h), 400)
                       "escribir" -> {
                           val n = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
@@ -287,6 +301,10 @@ jobs:
                               }
                           }
                       }
+                      "tocar_texto" -> {
+                          val t = a.optString("texto")
+                          if (!clickText(t)) log("No encontré '$t' en pantalla")
+                      }
                       "abrir_app" -> openApp(a.optString("app"))
                       "atras" -> performGlobalAction(GLOBAL_ACTION_BACK)
                       "inicio" -> performGlobalAction(GLOBAL_ACTION_HOME)
@@ -294,6 +312,45 @@ jobs:
                       "esperar" -> Thread.sleep(3000)
                       else -> log("Acción desconocida")
                   }
+              }
+
+              private fun clickText(t: String): Boolean {
+                  fun find(n: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+                      if (n == null) return null
+                      val s = (n.text ?: n.contentDescription)?.toString() ?: ""
+                      if (s.isNotEmpty() && s.contains(t, true)) {
+                          var c: AccessibilityNodeInfo? = n
+                          while (c != null && !c.isClickable) c = c.parent
+                          if (c != null) return c
+                      }
+                      for (i in 0 until n.childCount) {
+                          val r = find(n.getChild(i))
+                          if (r != null) return r
+                      }
+                      return null
+                  }
+                  val node = find(rootInActiveWindow) ?: return false
+                  return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+              }
+
+              private fun uiDump(): String {
+                  val sb = StringBuilder()
+                  val w = resources.displayMetrics.widthPixels
+                  val h = resources.displayMetrics.heightPixels
+                  var n = 0
+                  fun walk(node: AccessibilityNodeInfo?) {
+                      if (node == null || n >= 60) return
+                      val t = (node.text ?: node.contentDescription)?.toString()
+                      if (!t.isNullOrBlank() && (node.isClickable || node.isEditable)) {
+                          val r = android.graphics.Rect()
+                          node.getBoundsInScreen(r)
+                          sb.append("- ").append(t.take(40)).append(" @ ").append(r.centerX() * 1000 / w).append(",").append(r.centerY() * 1000 / h).append("\n")
+                          n++
+                      }
+                      for (i in 0 until node.childCount) walk(node.getChild(i))
+                  }
+                  walk(rootInActiveWindow)
+                  return if (sb.isEmpty()) "(sin datos)" else sb.toString()
               }
 
               private fun gesture(x1: Float, y1: Float, x2: Float?, y2: Float?, dur: Long) {
