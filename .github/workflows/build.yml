@@ -156,7 +156,7 @@ jobs:
           private const val SYS = """Sos un agente que maneja un celular Android mirando capturas de pantalla. Respondé SOLO un JSON con UNA acción por vez.
           Coordenadas normalizadas de 0 a 1000 (x horizontal, y vertical, origen arriba a la izquierda).
           Acciones: {"accion":"tocar","x":0,"y":0} | {"accion":"deslizar","x":0,"y":0,"x2":0,"y2":0} (para scroll) | {"accion":"escribir","texto":"...","enter":false} (antes tocá el campo) | {"accion":"abrir_app","app":"nombre"} | {"accion":"atras"} | {"accion":"inicio"} | {"accion":"recientes"} | {"accion":"esperar"} | {"accion":"terminar","mensaje":"resumen"}.
-          Agregá siempre "razon" con una frase corta. Si la tarea ya está cumplida, usá terminar. Si algo falla varias veces, probá otro camino. Nunca compres, pagues, envíes mensajes ni borres datos salvo que la tarea lo pida explícitamente."""
+          Para abrir una app usá SIEMPRE abrir_app con el nombre que ves; nunca toques su ícono. Al tocar, apuntá al centro del elemento. Agregá siempre "razon" con una frase corta. Si la tarea ya está cumplida, usá terminar. Si algo falla varias veces, probá otro camino. Nunca compres, pagues, envíes mensajes ni borres datos salvo que la tarea lo pida explícitamente."""
 
           class AgentService : AccessibilityService() {
               companion object {
@@ -240,7 +240,7 @@ jobs:
                       .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", SYS))))
                       .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
                       .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.2))
-                  for (intento in 1..3) {
+                  for (intento in 1..6) {
                       val c = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent").openConnection() as HttpURLConnection
                       c.requestMethod = "POST"
                       c.connectTimeout = 20000
@@ -258,7 +258,7 @@ jobs:
                           t = t.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
                           return JSONObject(t)
                       }
-                      if (code == 429 || code == 503) { log("Gemini ocupado ($code), reintento $intento..."); Thread.sleep(6000); continue }
+                      if (code == 429 || code == 503) { log("Gemini ocupado ($code), reintento $intento..."); Thread.sleep(10000); continue }
                       log("Gemini error $code: ${txt.take(200)}")
                       return null
                   }
@@ -313,7 +313,7 @@ jobs:
                   val pm = packageManager
                   val list = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
                   val hit = list.firstOrNull { it.loadLabel(pm).toString().equals(name, true) }
-                      ?: list.firstOrNull { it.loadLabel(pm).toString().contains(name, true) }
+                      ?: list.firstOrNull { val l = it.loadLabel(pm).toString(); l.contains(name, true) || name.contains(l, true) }
                   if (hit == null) { log("No encontré la app '$name'"); return }
                   val i = pm.getLaunchIntentForPackage(hit.activityInfo.packageName)
                   if (i != null) startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
